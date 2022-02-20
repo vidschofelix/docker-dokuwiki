@@ -1,24 +1,13 @@
-# syntax=docker/dockerfile:experimental
-FROM --platform=${TARGETPLATFORM:-linux/amd64} alpine:3.10
+ARG DOKUWIKI_VERSION="2020-07-29"
+ARG DOKUWIKI_MD5="8867b6a5d71ecb5203402fe5e8fa18c9"
 
-ARG TARGETPLATFORM
-ARG BUILDPLATFORM
-RUN printf "I am running on ${BUILDPLATFORM:-linux/amd64}, building for ${TARGETPLATFORM:-linux/amd64}\n$(uname -a)\n"
+FROM crazymax/yasu:latest AS yasu
+FROM crazymax/alpine-s6:3.14-2.2.0.3
 
-LABEL maintainer="CrazyMax" \
-  org.label-schema.name="dokuwiki" \
-  org.label-schema.description="DokuWiki" \
-  org.label-schema.url="https://github.com/crazy-max/docker-dokuwiki" \
-  org.label-schema.vcs-url="https://github.com/crazy-max/docker-dokuwiki" \
-  org.label-schema.vendor="CrazyMax" \
-  org.label-schema.schema-version="1.0"
-
-ENV DOKUWIKI_VERSION="2018-04-22b" \
-  DOKUWIKI_MD5="605944ec47cd5f822456c54c124df255" \
-  TZ="UTC"
-
+COPY --from=yasu / /
 RUN apk --update --no-cache add \
     curl \
+    imagemagick \
     inotify-tools \
     libgd \
     nginx \
@@ -28,11 +17,13 @@ RUN apk --update --no-cache add \
     php7-curl \
     php7-fpm \
     php7-gd \
-    php7-imagick \
     php7-json \
     php7-ldap \
     php7-mbstring \
     php7-openssl \
+    php7-pdo \
+    php7-pdo_sqlite \
+    php7-pecl-imagick \
     php7-session \
     php7-simplexml \
     php7-sqlite3 \
@@ -40,11 +31,17 @@ RUN apk --update --no-cache add \
     php7-zip \
     php7-zlib \
     shadow \
-    supervisor \
     tar \
     tzdata \
-  && rm -rf /tmp/* /var/cache/apk/*
+  && rm -rf /tmp/* /var/cache/apk/* /var/www/*
 
+ENV S6_BEHAVIOUR_IF_STAGE2_FAILS="2" \
+  TZ="UTC" \
+  PUID="1500" \
+  PGID="1500"
+
+ARG DOKUWIKI_VERSION
+ARG DOKUWIKI_MD5
 RUN apk --update --no-cache add -t build-dependencies \
     gnupg \
     wget \
@@ -55,41 +52,17 @@ RUN apk --update --no-cache add -t build-dependencies \
   && apk del build-dependencies \
   && rm -rf /root/.gnupg /tmp/* /var/cache/apk/*
 
-COPY entrypoint.sh /entrypoint.sh
-COPY assets /
+COPY rootfs /
 
-RUN chmod a+x /entrypoint.sh /usr/local/bin/* \
-  && addgroup -g 1500 dokuwiki \
-  && adduser -D -H -u 1500 -G dokuwiki -s /bin/sh dokuwiki \
-  && mkdir -p \
-    /data \
-    /var/log/supervisord \
-    /var/run/nginx \
-    /var/run/php-fpm \
-    /var/run/supervisord \
-  && chown -R dokuwiki. \
-    /data \
-    /etc/nginx \
-    /etc/php7 \
-    /tpls \
-    /var/lib/nginx \
-    /var/log/nginx \
-    /var/log/php7 \
-    /var/log/supervisord \
-    /var/run/nginx \
-    /var/run/php-fpm \
-    /var/run/supervisord \
-    /var/tmp/nginx \
-    /var/www
-
-USER dokuwiki
+RUN chmod a+x /usr/local/bin/* \
+  && addgroup -g ${PGID} dokuwiki \
+  && adduser -D -H -u ${PUID} -G dokuwiki -s /bin/sh dokuwiki
 
 EXPOSE 8000
 WORKDIR /var/www
 VOLUME [ "/data" ]
 
-ENTRYPOINT [ "/entrypoint.sh" ]
-CMD [ "/usr/bin/supervisord", "-c", "/etc/supervisord.conf" ]
+ENTRYPOINT [ "/init" ]
 
-HEALTHCHECK --interval=10s --timeout=5s \
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s \
   CMD curl --fail http://127.0.0.1:12345/ping || exit 1

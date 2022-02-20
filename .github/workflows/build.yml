@@ -1,78 +1,89 @@
 name: build
 
 on:
-  pull_request:
-    branches: 'master'
   push:
-    branches: 'master'
-    tags: '*'
+    branches:
+      - 'master'
+    tags:
+      - '*'
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    branches:
+      - 'master'
+    paths-ignore:
+      - '**.md'
+
+env:
+  DOCKERHUB_SLUG: crazymax/dokuwiki
+  GHCR_SLUG: ghcr.io/crazy-max/dokuwiki
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       -
-        name: Prepare
-        id: prepare
-        run: |
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
-            TAG=${GITHUB_REF#refs/tags/}
-            echo ::set-output name=tag_name::${TAG}
-            echo ::set-output name=version::${TAG%-*}
-          else
-            echo ::set-output name=version::snapshot
-          fi
-          echo ::set-output name=build_date::$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-          echo ::set-output name=docker_platforms::linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64,linux/386,linux/ppc64le,linux/s390x
-          echo ::set-output name=docker_username::crazymax
-          echo ::set-output name=docker_image::crazymax/dokuwiki
-      -
-        # https://github.com/crazy-max/ghaction-docker-buildx
-        name: Set up Docker Buildx
-        uses: crazy-max/ghaction-docker-buildx@v1
-        with:
-          version: latest
-      -
-        # https://github.com/actions/checkout
         name: Checkout
-        uses: actions/checkout@v1
+        uses: actions/checkout@v2
       -
-        name: Docker Buildx (no push)
-        run: |
-          docker buildx build --platform ${{ steps.prepare.outputs.docker_platforms }} \
-            --output "type=image,push=false" \
-            --label "org.label-schema.build-date=${{ steps.prepare.outputs.build_date }}" \
-            --label "org.label-schema.version=${{ steps.prepare.outputs.version }}" \
-            --label "org.label-schema.vcs-ref=${GITHUB_SHA::8}" \
-            --tag "${{ steps.prepare.outputs.docker_image }}:latest" \
-            --tag "${{ steps.prepare.outputs.docker_image }}:${{ steps.prepare.outputs.version }}" \
-            --file Dockerfile .
+        name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v3
+        with:
+          images: |
+            ${{ env.DOCKERHUB_SLUG }}
+            ${{ env.GHCR_SLUG }}
+          tags: |
+            type=match,pattern=(.*)-r,group=1
+            type=ref,event=pr
+            type=edge
+          labels: |
+            org.opencontainers.image.title=DokuWiki
+            org.opencontainers.image.description=Simple to use and highly versatile Open Source wiki software
+            org.opencontainers.image.vendor=CrazyMax
       -
-        name: Docker Login
-        if: success() && startsWith(github.ref, 'refs/tags/')
-        env:
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-        run: |
-          echo "${DOCKER_PASSWORD}" | docker login --username "${{ steps.prepare.outputs.docker_username }}" --password-stdin
+        name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
       -
-        name: Docker Buildx (push)
-        if: success() && startsWith(github.ref, 'refs/tags/')
-        run: |
-          docker buildx build --platform ${{ steps.prepare.outputs.docker_platforms }} \
-            --output "type=image,push=true" \
-            --label "org.label-schema.build-date=${{ steps.prepare.outputs.build_date }}" \
-            --label "org.label-schema.version=${{ steps.prepare.outputs.version }}" \
-            --label "org.label-schema.vcs-ref=${GITHUB_SHA::8}" \
-            --tag "${{ steps.prepare.outputs.docker_image }}:${{ steps.prepare.outputs.version }}" \
-            --tag "${{ steps.prepare.outputs.docker_image }}:latest" \
-            --file Dockerfile .
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+        with:
+          buildkitd-flags: "--debug"
       -
-        name: Docker Check Manifest
-        if: always() && startsWith(github.ref, 'refs/tags/')
-        run: |
-          docker run --rm mplatform/mquery ${{ steps.prepare.outputs.docker_image }}:${{ steps.prepare.outputs.version }}
+        name: Login to DockerHub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
       -
-        name: Clear
-        if: always() && startsWith(github.ref, 'refs/tags/')
+        name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      -
+        name: Build
+        uses: docker/bake-action@v1
+        with:
+          files: |
+            ./docker-bake.hcl
+            ${{ steps.meta.outputs.bake-file }}
+          targets: image-all
+          push: ${{ github.event_name != 'pull_request' }}
+      -
+        name: Check manifest
+        if: github.event_name != 'pull_request'
         run: |
-          rm -f ${HOME}/.docker/config.json
+          docker buildx imagetools inspect ${{ env.DOCKERHUB_SLUG }}:${{ steps.meta.outputs.version }}
+          docker buildx imagetools inspect ${{ env.GHCR_SLUG }}:${{ steps.meta.outputs.version }}
+      -
+        name: Inspect image
+        if: github.event_name != 'pull_request'
+        run: |
+          docker pull ${{ env.DOCKERHUB_SLUG }}:${{ steps.meta.outputs.version }}
+          docker image inspect ${{ env.DOCKERHUB_SLUG }}:${{ steps.meta.outputs.version }}
+          docker pull ${{ env.GHCR_SLUG }}:${{ steps.meta.outputs.version }}
+          docker image inspect ${{ env.GHCR_SLUG }}:${{ steps.meta.outputs.version }}
